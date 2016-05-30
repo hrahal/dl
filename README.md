@@ -44,3 +44,5 @@ GET localhost:3000/api/zurich-airport/stats/
 ```
 GET localhost:3000/api/all/stats/
 ```
+
+this project was tested using mongo > 3.0.0 & node > 5.0.0
