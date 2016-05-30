@@ -1,27 +1,22 @@
 "use strict";
 
-var Conv = require("csvtojson").Converter;
-var conv= new Conv({construct:false, ignoreEmpty: true});
-var async = require("async");
-var crypto = require("crypto");
-var util = require("util");
-var fs = require("fs");
-var env = require('express')().get("env");
-var mongo = require('mongoskin');
-var config = require("../config");
-var EventEmitter = require('events').EventEmitter;
-var docs = new EventEmitter();
-var db = mongo.db("mongodb://" + config[env].mongo.host + ":" +
-    config[env].mongo.port + "/airport", {native_parser: true, keepAlive: true});
-var data_file = process.argv[2];
-var finished = false;
-var total = 0,
+var Conv = require("csvtojson").Converter,
+    conv= new Conv({construct:false, ignoreEmpty: true}),
+    async = require("async"),
+    crypto = require("crypto"),
+    util = require("util"),
+    fs = require("fs"),
+    env = require('express')().get("env"),
+    mongo = require('mongoskin'),
+    config = require("../config"),
+    db = mongo.db("mongodb://" + config[env].mongo.host + ":" +
+        config[env].mongo.port + "/airport", {native_parser: true, keepAlive: true}),
+    reviewsCol = db.bind("reviews"),
+    trackopsCol =  db.bind("track_ops"),
+    data_file = process.argv[2],
+    total = 0,
     processed = 0,
     rejected = 0;
-var ops = {};
-var reviewsCol = db.bind("reviews");
-var trackopsCol =  db.bind("track_ops");
-
 
 var lib = {
     "updateTrackOps": function (stats, status, cb) {
@@ -34,17 +29,38 @@ var lib = {
             "upsert": true
         }, cb);
 
+    },
+    "kill": function (stats, status) {
+        console.log("updating file status, accept");
+        lib.updateTrackOps(stats, status, function (err, success) {
+
+            if (err) {
+                return callback(err);
+            }
+
+            console.log("total", total, "processed", processed, "rejected", rejected);
+            console.log("processing jobs finished, exiting now..");
+
+            db.close();
+            process.exit();
+
+        });
+    },
+    "createObjectHash": function (item) {
+        return crypto.createHash('sha1')
+            .update(JSON.stringify(item))
+            .digest('hex');
     }
 };
 
 var processData = function (results, callback) {
 
-    var rs = require("fs").createReadStream(data_file);
+    var rs = fs.createReadStream(data_file);
 
     var insert = async.cargo(function(reviews, cb) {
 
         /*
-         * push data to mongo
+         * push bulk data to mongo
          * */
         reviewsCol.bulkWrite(reviews, function(err, success) {
 
@@ -57,7 +73,7 @@ var processData = function (results, callback) {
             cb();
         });
 
-    }, 80);
+    }, 500);
 
 
     var processQueue = async.queue(function (data, done) {
@@ -82,12 +98,11 @@ var processData = function (results, callback) {
             cb();
         }, function () {
 
-            review.review_id = index + review.author + review.author_country + review.airport_name;
+            review.review_id = lib.createObjectHash(index +
+                review.author + review.author_country +
+                review.airport_name);
 
-            review.object_hash = crypto.createHash('sha1')
-                .update(JSON.stringify(review))
-                .digest('hex');
-
+            review.object_hash = lib.createObjectHash(review);
 
             reviewsCol.findOne({
                 "object_hash": review.object_hash
@@ -101,34 +116,40 @@ var processData = function (results, callback) {
 
                 if (!found) {
 
-                    insert.push({
+                    /*
+                    * build query to either insert new docs, or
+                    * update existing ones
+                    * */
+                    var query = {
                         updateOne: {
                             filter: {
                                 "review_id": review.review_id
                             },
-                            update: review,
+                            update: {
+                                "$set": review
+                            },
                             upsert:true
                         }
-                    }, function (err) {
+                    };
+
+                    insert.push(query, function (err) {
 
                         if (err) {
                             return callback (err)
                         }
 
-                        //rs.resume();
                         done();
                     });
                 } else {
 
                     rejected += 1;
                     console.log("duplicate doc detected, omitting record", review.author);
-                    //rs.resume();
                     done();
 
                 }
             });
         });
-    }, 80);
+    }, 500);
 
 
     insert.saturated = function() {
@@ -150,38 +171,20 @@ var processData = function (results, callback) {
     };
 
     conv.on("record_parsed",function(review, rawData, rowIndex) {
-
         processQueue.push({review: review, rowIndex: rowIndex});
-
     });
 
     conv.on("end_parsed", function() {
 
-        function kill () {
-            console.log("updating file status, accept");
-            lib.updateTrackOps(results.checkFileInDB, "ready", function (err, success) {
-
-                if (err) {
-                    return callback(err);
-                }
-
-                console.log("total", total, "processed", processed, "rejected", rejected);
-
-                console.log("processing jobs finished, exiting now..");
-
-                db.close();
-                process.exit();
-
-            });
-        }
         processQueue.drain = function () {
 
             if (total && (total == rejected + processed)) {
-                kill();
+                lib.kill(results.checkFileInDB, "ready");
+            } else {
+                insert.drain = function() {
+                    lib.kill(results.checkFileInDB, "ready");
+                };
             }
-            insert.drain = function() {
-                kill();
-            };
         };
     });
 
@@ -190,6 +193,9 @@ var processData = function (results, callback) {
 
 var readFileStats = function (callback) {
 
+    /*
+    * get file stats to keep track of any changes
+    * */
     fs.stat(data_file, function (err, stats) {
 
         if (err) {
@@ -241,7 +247,8 @@ var checkFile = function (results, callback) {
             if ((found.ctime < stats.ctime) || (found.status && found.status === "processing")) {
 
                 /*
-                * file has been modified, update db record
+                * file has been modified or didn't compete last
+                * execution, update db record
                 * */
                 lib.updateTrackOps(stats, "processing", function (err, success) {
 
@@ -256,7 +263,7 @@ var checkFile = function (results, callback) {
             } else {
 
                 /*
-                * file not modified, nothing to do
+                * file was not modified, nothing to do
                 * */
 
                 console.log("file is up to date, nothing to do. exiting..");
@@ -284,11 +291,27 @@ var checkFile = function (results, callback) {
 
 if (data_file) {
 
-    ops.readFileStats = readFileStats;
-    ops.checkFileInDB = ["readFileStats", checkFile];
-    ops.processData = ["checkFileInDB", processData];
+    /*
+    * import to mongo starting point, processes 3 states
+     * in a 1 after the other. passing the needed info from
+     * one state to the other
+    * */
+    async.auto({
+        readFileStats : readFileStats,
+        checkFileInDB : ["readFileStats", checkFile],
+        processData : ["checkFileInDB", processData]
+    }, function (err) {
 
-    async.auto(ops);
+        /*
+        * master error handler, all the errors will
+        * be caught at this level
+        * */
+
+        if (err) {
+            throw new Error(err);
+        }
+
+    });
 
 } else {
 
