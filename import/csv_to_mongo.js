@@ -16,7 +16,8 @@ var Conv = require("csvtojson").Converter,
     data_file = process.argv[2],
     total = 0,
     processed = 0,
-    rejected = 0;
+    rejected = 0,
+    checkEndStream;
 
 var lib = {
     "updateTrackOps": function (stats, status, cb) {
@@ -31,6 +32,8 @@ var lib = {
 
     },
     "kill": function (stats, status) {
+
+        clearTimeout(checkEndStream);
         console.log("updating file status, accept");
         lib.updateTrackOps(stats, status, function (err, success) {
 
@@ -64,8 +67,8 @@ var processData = function (results, callback) {
          * */
         reviewsCol.bulkWrite(reviews, function(err, success) {
 
-            console.log("inserted " + success.upsertedCount + " doc at a time");
-            processed = processed + success.upsertedCount;
+            console.log("inserted " + reviews.length + " doc at a time");
+            processed = processed + reviews.length;
 
             if (err) {
                 return cb(err);
@@ -73,7 +76,7 @@ var processData = function (results, callback) {
             cb();
         });
 
-    }, 500);
+    }, 100);
 
 
     var processQueue = async.queue(function (data, done) {
@@ -98,9 +101,9 @@ var processData = function (results, callback) {
             cb();
         }, function () {
 
-            review.review_id = lib.createObjectHash(index +
+            review.review_id = /*lib.createObjectHash(*/index +
                 review.author + review.author_country +
-                review.airport_name);
+                review.airport_name//);
 
             review.object_hash = lib.createObjectHash(review);
 
@@ -149,7 +152,7 @@ var processData = function (results, callback) {
                 }
             });
         });
-    }, 500);
+    }, 100);
 
 
     insert.saturated = function() {
@@ -178,13 +181,19 @@ var processData = function (results, callback) {
 
         processQueue.drain = function () {
 
-            if (total && (total == rejected + processed)) {
-                lib.kill(results.checkFileInDB, "ready");
-            } else {
-                insert.drain = function() {
+            checkEndStream = setInterval(function () {
+                console.log(total, rejected, processed);
+                if (total && (total == rejected + processed)) {
+                    console.log(2);
                     lib.kill(results.checkFileInDB, "ready");
-                };
-            }
+                } else {
+                    insert.drain = function() {
+                        console.log(3);
+                        lib.kill(results.checkFileInDB, "ready");
+                    };
+                }
+            })
+
         };
     });
 

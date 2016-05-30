@@ -4,7 +4,7 @@
 
 module.exports = {
     "errors": {
-        "719": "no airport found by this name"
+        "719": "no reviews found for this criteria"
     },
     "development": {
         "mongo": {

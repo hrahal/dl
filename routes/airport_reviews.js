@@ -15,12 +15,22 @@ var db = mongo.db("mongodb://" + config[env].mongo.host + ":" +
 module.exports = function(req, res, next) {
 
     var airport = req.params.airport;
+    var overall_rating_min = parseInt(req.query.or_min) || 0;
+
     db.bind('reviews');
 
-    console.log(env)
     db.reviews.find(
         {
-            "airport_name": airport
+            "$and": [
+                {
+                    "airport_name": airport
+                },
+                {
+                    "overall_rating": {
+                        "$gte": overall_rating_min
+                    }
+                }
+            ]
         },
         {
             "overall_rating": 1,
@@ -42,7 +52,6 @@ module.exports = function(req, res, next) {
             return next(new Error(err));
         }
 
-        console.log(config);
         if (!results.length) {
             return next(new Error(config.errors["719"]));
         }
