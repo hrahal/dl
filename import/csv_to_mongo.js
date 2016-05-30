@@ -302,8 +302,8 @@ if (data_file) {
 
     /*
     * import to mongo starting point, processes 3 states
-     * in a 1 after the other. passing the needed info from
-     * one state to the other
+     * one after the other. passing the needed info from
+     * one state to the next 
     * */
     async.auto({
         readFileStats : readFileStats,
