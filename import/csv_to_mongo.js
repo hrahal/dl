@@ -101,9 +101,12 @@ var processData = function (results, callback) {
             cb();
         }, function () {
 
-            review.review_id = /*lib.createObjectHash(*/index +
+            var review_id = index +
                 review.author + review.author_country +
-                review.airport_name//);
+                review.airport_name;
+
+
+            review.review_id = review_id.replace(/[^a-z0-9]/gi, '').toLowerCase();
 
             review.object_hash = lib.createObjectHash(review);
 
@@ -303,7 +306,7 @@ if (data_file) {
     /*
     * import to mongo starting point, processes 3 states
      * one after the other. passing the needed info from
-     * one state to the next 
+     * one state to the next
     * */
     async.auto({
         readFileStats : readFileStats,
